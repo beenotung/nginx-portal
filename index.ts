@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { basename, join } from 'path'
+import { createInterface } from 'readline'
 
 export type Config = {
   filename: string
@@ -100,7 +101,11 @@ export function parse_config_list(text: string): Config[] {
   return config_list
 }
 
-export function scan_conf_dir(dir: string) {
+export function scan_conf_dir(dir: string): Config[] {
+  if (!existsSync(dir)) {
+    console.log('Warning: nginx config directory not found: ' + config_dir)
+    return []
+  }
   let filenames = readdirSync(dir)
   let config_list: Config[] = []
   for (let filename of filenames) {
@@ -201,6 +206,10 @@ if (!__filename.endsWith('.js')) {
   ]
   for (let config of sample_list) {
     let filename = parse_default_filename(config.server_name)
+    let file = join(config_dir, filename)
+    if (existsSync(file)) {
+      continue
+    }
     save_conf_file({
       dir: config_dir,
       config: {
@@ -221,6 +230,7 @@ export let modes = {
   apply_config() {
     let text = load_file(config_list_file)
     let config_list = parse_config_list(text)
+    mkdirSync(draft_dir, { recursive: true })
     for (let config of config_list) {
       let src = join(config_dir, config.filename)
       let dest = join(draft_dir, config.filename)
@@ -229,17 +239,128 @@ export let modes = {
       } else {
         save_conf_file({ dir: draft_dir, config })
       }
+      a
     }
   },
 }
 
-async function main() {
-  if (!existsSync(config_dir)) {
-    throw new Error('nginx config directory not found: ' + config_dir)
-  }
+function showHelp() {
+  let { version } = require('./package.json')
+  console.log(
+    `
+nginx-portal v${version}
 
+Usage: nginx-portal [options]
+
+Options:
+  -s | --scan           scan nginx configs
+  -a | --apply          apply nginx configs
+  -i | --interactive    run multiple modes with interactive menu
+  -h | --help           show this help message
+  -v | --version        show version information
+
+Example:
+  nginx-portal -h
+`.trim(),
+  )
+}
+
+function showVersion() {
+  let { version } = require('./package.json')
+  console.log(version)
+}
+
+async function cli() {
+  let interactive_flag = false
+  let scan_config_flag = false
+  let apply_config_flag = false
+  for (let i = 2; i < process.argv.length; i++) {
+    let arg = process.argv[i]
+    switch (arg) {
+      case '-h':
+      case '--help':
+        showHelp()
+        process.exit(0)
+      case '-v':
+      case '--version':
+        showVersion()
+        process.exit(0)
+      case '-i':
+      case '--interactive':
+        interactive_flag = true
+        break
+      case '-s':
+      case '--scan':
+        scan_config_flag = true
+        break
+      case '-a':
+      case '--apply':
+        apply_config_flag = true
+        break
+      default:
+        console.error('Error: unknown argument:', JSON.stringify(arg))
+        process.exit(1)
+    }
+  }
+  if (!interactive_flag && !scan_config_flag && !apply_config_flag) {
+    console.error('Error: run mode not specified.')
+    console.error('Hint: run "nginx-portal --help" to see available options.')
+    process.exit(1)
+  }
+  if (interactive_flag) {
+    // TODO
+    for (;;) {
+      console.log(
+        `
+Select an action:
+0. exit
+1. scan nginx configs
+2. apply nginx configs
+`.trim(),
+      )
+      let ans = await ask('action: ')
+      ans = ans.toLowerCase()
+      switch (ans) {
+        case '0':
+        case 'exit':
+        case '.exit':
+          return
+        case '1':
+        case 'scan':
+          modes.scan_config()
+          break
+        case '2':
+        case 'apply':
+          modes.apply_config()
+          break
+        default:
+          console.error('Error: unknown action')
+          break
+      }
+    }
+  }
+  if (scan_config_flag) {
+    modes.scan_config()
+  }
+  if (apply_config_flag) {
+    modes.apply_config()
+  }
+}
+
+function ask(prompt: string) {
+  return new Promise<string>(resolve => {
+    let io = createInterface({ input: process.stdin, output: process.stdout })
+    io.question(prompt, answer => {
+      io.close()
+      resolve(answer)
+    })
+  })
+}
+
+async function main() {
+  await cli()
   // modes.scan_config()
-  modes.apply_config()
+  // modes.apply_config()
 }
 
 main().catch(e => {
