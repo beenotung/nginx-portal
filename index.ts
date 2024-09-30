@@ -1,5 +1,11 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'fs'
+import { basename, join } from 'path'
 
 export type Config = {
   file: string
@@ -7,25 +13,118 @@ export type Config = {
   port: number
 }
 
-export function print_conf_list(config_list: Config[]) {
-  console.log(`|  port | server_name |`)
-  console.log(`|-------|-------------|`)
+export function parse_default_filename(server_name: string) {
+  return server_name.split(' ')[0].split(',')[0] + '.conf'
+}
+
+export function format_config_list(config_list: Config[]): string {
+  let lines: string[] = []
+  lines.push(`|  port | server_name | filename |`)
+  lines.push(`|-------|-------------|----------|`)
+  config_list.sort((a, b) => a.port - b.port)
   for (let config of config_list) {
     let port = config.port.toString().padStart(5, ' ')
-    console.log(`| ${port} | ${config.server_name} |`)
+    let line = `| ${port} | ${config.server_name} |`
+    let default_filename = parse_default_filename(config.server_name)
+    let filename = basename(config.file)
+    if (filename == default_filename) {
+      line += ` - |`
+    } else {
+      line += ` ${filename} |`
+    }
+    lines.push(line)
   }
+  return lines.join('\n')
 }
 
-export function scan_conf_dir(dir: string): Config[] {
+export function parse_config_list(args: {
+  dir: string
+  text: string
+}): Config[] {
+  let lines = args.text
+    .split('\n')
+    .map(line =>
+      line
+        .split('|')
+        .map(col => col.trim())
+        .filter(col => col.length > 0),
+    )
+    .filter(line => line.length > 0)
+  let headers = lines.shift()
+  if (!headers) {
+    throw new Error('missing header line')
+  }
+  if (
+    headers[0]?.toLowerCase() != 'port' ||
+    headers[1]?.toLowerCase() != 'server_name' ||
+    headers[2]?.toLowerCase() != 'filename'
+  ) {
+    throw new Error(
+      'invalid header, expect: "| port | server_name | filename |"',
+    )
+  }
+  if (lines.length == 0) return []
+
+  // remove separator line
+  if (
+    lines[0][0]?.startsWith('-') &&
+    lines[0][1]?.startsWith('-') &&
+    lines[0][2]?.startsWith('-')
+  ) {
+    lines.shift()
+  }
+
+  let config_list: Config[] = []
+
+  for (let cols of lines) {
+    let port = +cols[0]
+    if (!port) {
+      throw new Error('invalid port, got: ' + JSON.stringify(cols[0]))
+    }
+
+    let server_name = cols[1]
+    if (!server_name) {
+      throw new Error('missing server_name, port: ' + port)
+    }
+
+    let filename = cols[2]
+    if (filename == '-') {
+      filename = parse_default_filename(server_name)
+    }
+    let file = join(args.dir, filename)
+
+    let config: Config = {
+      port,
+      server_name,
+      file,
+    }
+    config_list.push(config)
+  }
+
+  return config_list
+}
+
+export function scan_conf_dir(dir: string) {
   let filenames = readdirSync(dir)
-  return filenames.map(filename => {
+  let config_list: Config[] = []
+  for (let filename of filenames) {
     let file = join(dir, filename)
-    return scan_conf_file(file)
-  })
+    try {
+      let config = parse_conf_file(file)
+      config_list.push(config)
+    } catch (error) {
+      let message = String(error)
+      if (message.includes('not found')) {
+        continue
+      }
+      showError(error)
+    }
+  }
+  return config_list
 }
 
-export function scan_conf_file(file: string): Config {
-  let text = readFileSync(file).toString().trim()
+export function parse_conf_file(file: string): Config {
+  let text = loadFile(file).trim()
   let lines = text
     .split('\n')
     .map(line => line.split('#')[0].trim())
@@ -81,17 +180,63 @@ server {
 }
 
 function saveFile(file: string, text: string) {
-  console.log('write file:', file)
+  console.log('save file:', file)
   writeFileSync(file, text.trim() + '\n')
 }
 
-async function main() {
-  let dir = 'mock/test'
-  mkdirSync(dir, { recursive: true })
-  // genConf({ dir, server_name: 'jobsdone.hkit.cc', port: 8123 })
-  // genConf({ dir, server_name: 'talent-demand-dynamic.hkit.cc', port: 8124 })
-  let config_list = scan_conf_dir(dir)
-  print_conf_list(config_list)
+function loadFile(file: string) {
+  console.log('load file:', file)
+  return readFileSync(file).toString()
 }
 
-main().catch(e => console.error(e))
+function showError(error: unknown) {
+  if (__filename.endsWith('.js')) {
+    console.error(String(error))
+  } else {
+    console.error(error)
+  }
+}
+
+let config_list_file = 'nginx.md'
+
+export let modes = {
+  scan_config(dir: string) {
+    let config_list = scan_conf_dir(dir)
+    let text = format_config_list(config_list)
+    saveFile(config_list_file, text)
+  },
+  apply_config(dir: string) {
+    let text = loadFile(config_list_file)
+    let config_list = parse_config_list({ dir, text })
+    for (let config of config_list) {
+    }
+  },
+}
+
+async function main() {
+  let dir = '/etc/nginx/conf.d'
+  if (!__filename.endsWith('.js')) {
+    dir = 'mock/conf.d'
+    mkdirSync(dir, { recursive: true })
+    gen_conf_file({
+      dir,
+      server_name: 'jobsdone.hkit.cc',
+      port: 8123,
+    })
+    gen_conf_file({
+      dir,
+      server_name: 'talent-demand-dynamic.hkit.cc',
+      port: 8124,
+    })
+  }
+  if (!existsSync(dir)) {
+    throw new Error('nginx config directory not found: ' + dir)
+  }
+
+  modes.scan_config(dir)
+}
+
+main().catch(e => {
+  showError(e)
+  process.exit(1)
+})
