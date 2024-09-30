@@ -1,4 +1,5 @@
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -8,7 +9,7 @@ import {
 import { basename, join } from 'path'
 
 export type Config = {
-  file: string
+  filename: string
   server_name: string
   port: number
 }
@@ -26,22 +27,18 @@ export function format_config_list(config_list: Config[]): string {
     let port = config.port.toString().padStart(5, ' ')
     let line = `| ${port} | ${config.server_name} |`
     let default_filename = parse_default_filename(config.server_name)
-    let filename = basename(config.file)
-    if (filename == default_filename) {
+    if (config.filename == default_filename) {
       line += ` - |`
     } else {
-      line += ` ${filename} |`
+      line += ` ${config.filename} |`
     }
     lines.push(line)
   }
   return lines.join('\n')
 }
 
-export function parse_config_list(args: {
-  dir: string
-  text: string
-}): Config[] {
-  let lines = args.text
+export function parse_config_list(text: string): Config[] {
+  let lines = text
     .split('\n')
     .map(line =>
       line
@@ -91,12 +88,11 @@ export function parse_config_list(args: {
     if (filename == '-') {
       filename = parse_default_filename(server_name)
     }
-    let file = join(args.dir, filename)
 
     let config: Config = {
       port,
       server_name,
-      file,
+      filename,
     }
     config_list.push(config)
   }
@@ -146,36 +142,30 @@ export function parse_conf_file(file: string): Config {
   if (!port) {
     throw new Error('port not found, file: ' + JSON.stringify(file))
   }
-  return { file, server_name, port }
+  let filename = basename(file)
+  return { filename, server_name, port }
 }
 
-export function gen_conf_file(config: {
-  dir: string
-  server_name: string
-  port: number
-}) {
-  let filename = config.server_name.split(',')[0] + '.conf'
+export function save_conf_file(args: { dir: string; config: Config }) {
+  let { dir, config } = args
   let text = `
 server {
-  listen 80;
-  listen [::]:80;
+    listen 80;
+    listen [::]:80;
 
-  server_name ${config.server_name};
+    server_name ${config.server_name};
 
-  location / {
-    proxy_pass http://localhost:${config.port};
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection 'upgrade';
-    proxy_set_header Host $host;
-    proxy_cache_bypass $http_upgrade;
-  }
-
-  #listen 443 ssl http2; # managed by Certbot
-  #listen [::]:443 ssl http2; # managed by Certbot
+    location / {
+        proxy_pass http://localhost:${config.port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
 }
 `
-  let file = join(config.dir, filename)
+  let file = join(dir, config.filename)
   saveFile(file, text)
 }
 
@@ -199,41 +189,57 @@ function showError(error: unknown) {
 
 let config_list_file = 'nginx.md'
 
+let config_dir = '/etc/nginx/conf.d'
+let draft_dir = 'draft/conf.d'
+
+if (!__filename.endsWith('.js')) {
+  config_dir = 'mock/conf.d'
+  mkdirSync(config_dir, { recursive: true })
+  let sample_list = [
+    { server_name: 'jobsdone.hkit.cc', port: 8123 },
+    { server_name: 'talent-demand-dynamic.hkit.cc', port: 20080 },
+  ]
+  for (let config of sample_list) {
+    let filename = parse_default_filename(config.server_name)
+    save_conf_file({
+      dir: config_dir,
+      config: {
+        filename,
+        server_name: config.server_name,
+        port: config.port,
+      },
+    })
+  }
+}
+
 export let modes = {
-  scan_config(dir: string) {
-    let config_list = scan_conf_dir(dir)
+  scan_config() {
+    let config_list = scan_conf_dir(config_dir)
     let text = format_config_list(config_list)
     saveFile(config_list_file, text)
   },
-  apply_config(dir: string) {
+  apply_config() {
     let text = loadFile(config_list_file)
-    let config_list = parse_config_list({ dir, text })
+    let config_list = parse_config_list(text)
     for (let config of config_list) {
+      let src = join(config_dir, config.filename)
+      let dest = join(draft_dir, config.filename)
+      if (existsSync(src)) {
+        copyFileSync(src, dest)
+      } else {
+        save_conf_file({ dir: draft_dir, config })
+      }
     }
   },
 }
 
 async function main() {
-  let dir = '/etc/nginx/conf.d'
-  if (!__filename.endsWith('.js')) {
-    dir = 'mock/conf.d'
-    mkdirSync(dir, { recursive: true })
-    gen_conf_file({
-      dir,
-      server_name: 'jobsdone.hkit.cc',
-      port: 8123,
-    })
-    gen_conf_file({
-      dir,
-      server_name: 'talent-demand-dynamic.hkit.cc',
-      port: 8124,
-    })
-  }
-  if (!existsSync(dir)) {
-    throw new Error('nginx config directory not found: ' + dir)
+  if (!existsSync(config_dir)) {
+    throw new Error('nginx config directory not found: ' + config_dir)
   }
 
-  modes.scan_config(dir)
+  // modes.scan_config()
+  modes.apply_config()
 }
 
 main().catch(e => {
