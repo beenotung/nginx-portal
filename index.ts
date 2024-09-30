@@ -120,7 +120,7 @@ export function scan_conf_dir(dir: string) {
 }
 
 export function parse_conf_file(file: string): Config {
-  let text = loadFile(file).trim()
+  let text = load_file(file).trim()
   let lines = text
     .split('\n')
     .map(line => line.split('#')[0].trim())
@@ -166,15 +166,15 @@ server {
 }
 `
   let file = join(dir, config.filename)
-  saveFile(file, text)
+  save_file(file, text)
 }
 
-function saveFile(file: string, text: string) {
+function save_file(file: string, text: string) {
   console.log('save file:', file)
   writeFileSync(file, text.trim() + '\n')
 }
 
-function loadFile(file: string) {
+function load_file(file: string) {
   console.log('load file:', file)
   return readFileSync(file).toString()
 }
@@ -216,10 +216,10 @@ export let modes = {
   scan_config() {
     let config_list = scan_conf_dir(config_dir)
     let text = format_config_list(config_list)
-    saveFile(config_list_file, text)
+    save_file(config_list_file, text)
   },
   apply_config() {
-    let text = loadFile(config_list_file)
+    let text = load_file(config_list_file)
     let config_list = parse_config_list(text)
     for (let config of config_list) {
       let src = join(config_dir, config.filename)
