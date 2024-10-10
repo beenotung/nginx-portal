@@ -167,6 +167,8 @@ server {
 
     server_name ${config.server_name};
 
+    # client_max_body_size 1M;
+
     location / {
         proxy_pass http://localhost:${config.port};
         proxy_http_version 1.1;
