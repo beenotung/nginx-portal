@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   writeFileSync,
 } from 'fs'
 import { basename } from 'path'
@@ -236,8 +237,26 @@ function join(...parts: string[]) {
 }
 
 function save_file(file: string, text: string) {
+  text = text.trim() + '\n'
+  if (existsSync(file)) {
+    let old_text = readFileSync(file).toString()
+    if (text == old_text) {
+      console.log('unchanged file:', file)
+      return
+    }
+    let date = new Date()
+    let y = date.getFullYear()
+    let m = date.getMonth().toString().padStart(2, '0')
+    let d = date.getDate().toString().padStart(2, '0')
+    let H = date.getHours().toString().padStart(2, '0')
+    let M = date.getMinutes().toString().padStart(2, '0')
+    let S = date.getSeconds().toString().padStart(2, '0')
+    let new_file = `${file}.bk_${y}-${m}-${d}_${H}${M}${S}`
+    console.log('backup file:', file, '->', new_file)
+    renameSync(file, new_file)
+  }
   console.log('save file:', file)
-  writeFileSync(file, text.trim() + '\n')
+  writeFileSync(file, text)
 }
 
 function load_file(file: string) {
