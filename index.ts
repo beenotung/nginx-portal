@@ -502,13 +502,11 @@ function ask(prompt: string) {
   })
 }
 
-async function main() {
-  await cli()
-}
-
-if (basename(__filename) == basename(process.argv[1])) {
-  main().catch(e => {
-    showError(e)
+export async function main() {
+  try {
+    await cli()
+  } catch (error) {
+    showError(error)
     process.exit(1)
-  })
+  }
 }

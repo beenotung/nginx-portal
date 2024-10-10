@@ -6,11 +6,9 @@
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "skipLibCheck": true,
-    "incremental": true,
-    "declaration": true,
-    "outDir": "dist"
   },
   "exclude": [
+    "scripts",
     "dist"
   ]
 }
