@@ -89,10 +89,10 @@ npx nginx-portal [options]
 
 ### Example Commands
 
-#### Scan Nginx configs from the default directory:
+#### Run in interactive mode:
 
 ```bash
-npx nginx-portal --scan
+npx nginx-portal -i
 ```
 
 #### Scan Nginx configs from a custom directory:
@@ -101,16 +101,10 @@ npx nginx-portal --scan
 npx nginx-portal --scan --config_dir ./mock/conf.d
 ```
 
-#### Apply Nginx configs from a custom directory:
+#### Apply Nginx configs to default directory:
 
 ```bash
-npx nginx-portal --apply --config_dir ./mock/conf.d
-```
-
-#### Run in interactive mode:
-
-```bash
-npx nginx-portal -i
+npx nginx-portal --apply
 ```
 
 ## Format and Example
