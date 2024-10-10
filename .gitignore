@@ -11,5 +11,6 @@ dist/
 mock/
 draft/
 nginx.md
+nginx.md.bk_*
 time.log
 index.js
