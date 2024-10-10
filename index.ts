@@ -416,11 +416,12 @@ nginx-portal v${version}
 Usage: nginx-portal [options]
 
 Options:
-  -s | --scan           scan nginx configs
-  -a | --apply          apply nginx configs
-  -i | --interactive    run multiple modes with interactive menu
-  -h | --help           show this help message
-  -v | --version        show version information
+  -s | --scan               scan nginx configs
+  -a | --apply              apply nginx configs
+  -i | --interactive        run multiple modes with interactive menu
+  -d | --config_dir DIR     set the directory of nginx configs to be scanned from (default: /etc/nginx/conf.d)
+  -h | --help               show this help message
+  -v | --version            show version information
 
 Example:
   nginx-portal -h
@@ -459,6 +460,15 @@ async function cli() {
       case '-a':
       case '--apply':
         apply_config_flag = true
+        break
+      case '-d':
+      case '--config_dir':
+        i++
+        config_dir = process.argv[i]
+        if (!config_dir || config_dir == '-') {
+          console.error('Error: --config_dir requires a directory argument')
+          process.exit(1)
+        }
         break
       default:
         console.error('Error: unknown argument:', JSON.stringify(arg))
