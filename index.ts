@@ -418,8 +418,8 @@ nginx-portal v${version}
 Usage: nginx-portal [options]
 
 Options:
-  -s | --scan               scan nginx configs
-  -a | --apply              apply nginx configs
+  -s | --scan               scan nginx configs and save to nginx.md file
+  -a | --apply              apply nginx configs from nginx.md file
   -i | --interactive        run multiple modes with interactive menu
   -d | --config_dir DIR     set the directory of nginx configs to be scanned from (default: /etc/nginx/conf.d)
   -h | --help               show this help message
