@@ -311,6 +311,7 @@ export let modes = {
       let dest = join(draft_dir, config.filename)
       if (!existsSync(src)) {
         save_conf_file({ dir: draft_dir, config })
+        no_ssl = true
         lines.push(`sudo cp ${JSON.stringify(dest)} ${JSON.stringify(src)}`)
         continue
       }
