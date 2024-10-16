@@ -365,8 +365,8 @@ export let modes = {
         `
 Select an action:
 0. exit
-1. scan nginx configs
-2. apply nginx configs
+1. scan nginx configs into nginx.md
+2. apply nginx configs from nginx.md and generate ${bash_file}
 3. show ${bash_file}
 4. run ${bash_file}
 `.trim(),
