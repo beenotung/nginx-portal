@@ -358,7 +358,9 @@ export let modes = {
     console.log('```')
   },
   run_bash() {
-    let out = execFileSync('bash', [bash_file]).toString()
+    let out = execFileSync('bash', [bash_file], {
+      stdio: 'inherit',
+    }).toString()
     console.log(out.trimEnd())
   },
   async interactive() {
