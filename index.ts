@@ -297,7 +297,7 @@ export let modes = {
       'to continue',
     )
   },
-  apply_config() {
+  apply_config(options: { apply_formatting: boolean }) {
     let text = load_file(config_list_file)
     let config_list = parse_config_list(text)
 
@@ -387,9 +387,12 @@ Select an action:
           modes.scan_config()
           break
         case '2':
-        case 'apply':
-          modes.apply_config()
+        case 'apply': {
+          let ans = await ask('apply formatting to nginx configs? (y/N): ')
+          let apply_formatting = ans.trim()[0]?.toLowerCase() == 'y'
+          modes.apply_config({ apply_formatting })
           break
+        }
         case '3':
         case 'show':
           modes.show_bash()
@@ -407,9 +410,18 @@ Select an action:
   },
 }
 
+function read_file_for_compare(file: string): string {
+  return readFileSync(file)
+    .toString()
+    .trim()
+    .split('\n')
+    .map(line => line.trim())
+    .join('')
+}
+
 function is_file_same(a_file: string, b_file: string) {
-  let a_text = readFileSync(a_file).toString().trim()
-  let b_text = readFileSync(b_file).toString().trim()
+  let a_text = read_file_for_compare(a_file)
+  let b_text = read_file_for_compare(b_file)
   return a_text == b_text
 }
 
@@ -424,6 +436,7 @@ Usage: nginx-portal [options]
 Options:
   -s | --scan               scan nginx configs and save to nginx.md file
   -a | --apply              apply nginx configs from nginx.md file
+  -f | --format             apply formatting to nginx configs (default skip formatting if no other effective changes)
   -i | --interactive        run multiple modes with interactive menu
   -d | --config_dir DIR     set the directory of nginx configs to be scanned from (default: /etc/nginx/conf.d)
   -h | --help               show this help message
@@ -444,6 +457,7 @@ async function cli() {
   let interactive_flag = false
   let scan_config_flag = false
   let apply_config_flag = false
+  let apply_formatting = false
   for (let i = 2; i < process.argv.length; i++) {
     let arg = process.argv[i]
     switch (arg) {
@@ -466,6 +480,10 @@ async function cli() {
       case '-a':
       case '--apply':
         apply_config_flag = true
+        break
+      case '-f':
+      case '--format':
+        apply_formatting = true
         break
       case '-d':
       case '--config_dir':
@@ -494,7 +512,7 @@ async function cli() {
     modes.scan_config()
   }
   if (apply_config_flag) {
-    modes.apply_config()
+    modes.apply_config({ apply_formatting })
   }
 }
 

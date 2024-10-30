@@ -82,6 +82,7 @@ npx nginx-portal [options]
 
 - `-s | --scan` : Scan Nginx configuration and save to `nginx.md` file.
 - `-a | --apply` : Apply Nginx configuration from `nginx.md` file and generate `draft/update.sh`.
+- `-f | --format` : Apply formatting to nginx configs (default skip formatting if no other effective changes).
 - `-i | --interactive` : Run in interactive mode with multiple options.
 - `-d | --config_dir DIR` : Set the directory of Nginx configs to be scanned (default: `/etc/nginx/conf.d`).
 - `-h | --help` : Show help message and usage information.
