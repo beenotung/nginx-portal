@@ -88,7 +88,7 @@ export function parse_config_list(text: string): Config[] {
     }
 
     let filename = cols[2]
-    if (filename == '-') {
+    if (filename == '-' || !filename?.trim()) {
       filename = parse_default_filename(server_name)
     }
 
