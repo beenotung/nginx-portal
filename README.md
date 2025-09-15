@@ -108,6 +108,72 @@ npx nginx-portal --scan --config_dir ./mock/conf.d
 npx nginx-portal --apply
 ```
 
+## Nginx Template Configuration
+
+The generated nginx configurations include several important features:
+
+- **WebSocket Support**: Properly forwards WebSocket connections with upgrade headers
+- **Client IP Forwarding**: Preserves real client IP addresses behind the nginx proxy using multiple header formats
+- **File Upload Limits**: Configurable `client_max_body_size` for large file uploads (uncomment and adjust as needed)
+- **HTTP/2 Support**: Automatically enabled when HTTPS certificates are present
+
+### Detailed Proxy Configuration
+
+The location block includes these proxy headers:
+
+```nginx
+location / {
+    # Forward to web server
+    proxy_pass http://localhost:PORT;
+    proxy_set_header Host $host;
+    proxy_http_version 1.1;
+
+    # WebSocket support
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection 'upgrade';
+    proxy_cache_bypass $http_upgrade;
+
+    # Client IP forwarding
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Forwarded "for=$remote_addr;proto=$scheme;host=$host";
+}
+```
+
+### File Upload Configuration
+
+The `client_max_body_size` setting controls the maximum allowed size of client request bodies. By default, it's commented out with a 1MB limit. To allow larger file uploads:
+
+1. Uncomment the line: `# client_max_body_size 1M;`
+2. Adjust the size as needed (e.g., `client_max_body_size 10M;` for 10MB)
+3. **Important**: This is a per-request limit, not per-file limit
+
+### WebSocket Configuration
+
+The nginx template includes WebSocket support with `proxy_cache_bypass $http_upgrade` to prevent caching of WebSocket/upgrade requests.
+
+**Heartbeat Considerations**: If your WebSocket client sends heartbeats every 30 seconds, the default `proxy_read_timeout` of 60 seconds is sufficient. However, if your client doesn't send heartbeats or sends them less frequently, you may need to increase the timeout:
+
+```nginx
+location / {
+    proxy_pass http://localhost:PORT;
+    # ... other headers ...
+    proxy_read_timeout 300s; # 5 minutes for clients without heartbeat
+}
+```
+
+### Client IP Forwarding
+
+The nginx template includes multiple client IP forwarding headers for compatibility:
+
+- `X-Real-IP`: Contains the real client IP
+- `X-Forwarded-For`: Standard header for proxy chains
+- `Forwarded`: RFC 7239 standard header (for nginx 1.22.0-)
+
+**For Express.js applications**: Add `app.set("trust proxy", "loopback")` to your app configuration, then use `req.ip` to get the real client IP address.
+
+**For nginx 1.23.0+**: You can use the newer `$forwarded` variable by uncommenting the last line in the template.
+
 ## Format and Example
 
 Example `nginx.md` file:
@@ -133,11 +199,7 @@ server {
 
     location / {
         proxy_pass http://localhost:9080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+        # ... proxy headers for websocket, client IP forwarding, etc.
     }
 }
 ```
@@ -155,11 +217,7 @@ server {
 
     location / {
         proxy_pass http://localhost:9080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+        # ... proxy headers for websocket, client IP forwarding, etc.
     }
 
     listen 443 ssl http2; # managed by Certbot

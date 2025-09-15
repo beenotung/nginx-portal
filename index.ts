@@ -167,15 +167,27 @@ server {
 
     server_name ${config.server_name};
 
+    ## Uncomment and increase if clients need to upload large files (per request limit, not per file limit)
     # client_max_body_size 1M;
 
     location / {
+        ## Forward to web server
         proxy_pass http://localhost:${config.port};
+        proxy_set_header Host $host;
         proxy_http_version 1.1;
+
+        ## Forward websocket connections
+        ## Client sends heartbeat every 30s, so default proxy_read_timeout 60s is fine
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+        proxy_cache_bypass $http_upgrade; # don't cache websocket/upgrade requests
+
+        ## Forward client IP behind nginx proxy
+        ## for express, add app.set("trust proxy", "loopback"), then use req.ip to get the client ip
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Forwarded "for=$remote_addr;proto=$scheme;host=$host"; # for nginx 1.22.0-
+        # proxy_set_header Forwarded $forwarded; # for nginx 1.23.0+
     }
 }
 `
