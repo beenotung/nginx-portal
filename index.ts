@@ -959,6 +959,10 @@ export let modes = {
       )
     }
 
+    if (lines.length > 0) {
+      lines.unshift('set -e')
+    }
+
     save_file(bash_file, lines.join('\n'))
 
     console.log()
