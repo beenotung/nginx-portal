@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process'
+import { execFileSync, spawnSync } from 'child_process'
 import {
   copyFileSync,
   existsSync,
@@ -195,7 +195,47 @@ server {
   save_file(file, text)
 }
 
-export function update_conf_file(file: string) {
+type Semver = {
+  major: number
+  minor: number
+  patch: number
+}
+
+/** Detect nginx version from `nginx -v` (e.g. 1.24.0). undefined if nginx missing/unreadable. */
+export function detect_nginx_version(): Semver | undefined {
+  try {
+    let result = spawnSync('nginx', ['-v'], { encoding: 'utf-8' })
+    let text = `${result.stderr || ''}${result.stdout || ''}`
+    let match = /nginx\/(\d+)\.(\d+)\.(\d+)/.exec(text)
+    if (!match) return undefined
+    return {
+      major: +match[1],
+      minor: +match[2],
+      patch: +match[3],
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/** True when standalone `http2 on;` is supported (nginx 1.25.1+). */
+export function nginx_supports_http2_directive(
+  version = detect_nginx_version(),
+): boolean {
+  if (!version) return false
+  return compare_semver(version, { major: 1, minor: 25, patch: 1 }) >= 0
+}
+
+function compare_semver(a: Semver, b: Semver): number {
+  if (a.major !== b.major) return a.major - b.major
+  if (a.minor !== b.minor) return a.minor - b.minor
+  return a.patch - b.patch
+}
+
+export function update_conf_file(
+  file: string,
+  version = detect_nginx_version(),
+) {
   const text = load_file(file)
 
   let new_text = text.replaceAll('\r', '')
@@ -209,30 +249,95 @@ export function update_conf_file(file: string) {
   }
 
   let lines = parse_conf_lines(new_text)
+  let useHttp2Directive = nginx_supports_http2_directive(version)
+
+  // look for line: "listen 443 ssl; # managed by Certbot"
+  //       or line: "listen [::]:443 ssl; # managed by Certbot"
+  let has_ssl = lines.some(
+    line =>
+      line.startsWith('listen ') &&
+      line.includes('443') &&
+      line.includes('ssl'),
+  )
 
   // look for line: "listen 443 ssl http2; # managed by Certbot"
   //       or line: "listen 443 http2 ssl; # managed by Certbot"
-  let has_http2 = lines.some(line => {
-    if (!line.startsWith('listen 443 ')) {
-      return false
+  //       or line: "listen [::]:443 ssl http2; # managed by Certbot"
+  let has_http2_line = lines.some(
+    line =>
+      line.startsWith('listen ') &&
+      line.includes('443') &&
+      line.includes('ssl') &&
+      line.includes('http2'),
+  )
+
+  // look for line: "http2 on;" (nginx 1.25.1+)
+  let has_http2_on = lines.some(line => line.startsWith('http2 on'))
+
+  let has_http2 = has_http2_line || has_http2_on
+
+  if (useHttp2Directive && has_ssl) {
+    // nginx 1.25.1+: prefer `http2 on;` and strip deprecated listen … http2
+    // e.g. "listen 443 ssl http2;" -> "listen 443 ssl;"
+    // e.g. "listen [::]:443 ssl http2;" -> "listen [::]:443 ssl;"
+    // then insert "http2 on;"
+    let lines = new_text.split('\n')
+
+    // remove "http2" from "listen … http2;" line
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i]
+      if (line.trimStart()[0] == '#') continue
+      if (
+        line.includes('listen ') &&
+        line.includes('443') &&
+        line.includes('ssl') &&
+        line.includes('http2')
+      ) {
+        lines[i] = line.replace(/\s+http2\b/, '')
+      }
     }
-    let parts = line.split(';')[0].split(' ')
-    return parts.includes('ssl') && parts.includes('http2')
-  })
 
-  // look for lines: "listen 443 ssl; # managed by Certbot"
-  let has_ssl = lines.some(line => line.startsWith('listen 443 ssl'))
+    // insert "http2 on;" line
+    if (!has_http2_on) {
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i]
+        if (line.trimStart()[0] == '#') continue
+        if (
+          line.includes('listen ') &&
+          line.includes('443') &&
+          line.includes('ssl')
+        ) {
+          let indent = line.match(/^(\s*)/)?.[1] ?? '    '
+          // e.g. insert "    http2 on;" after the first ssl listen line
+          lines.splice(i + 1, 0, `${indent}http2 on;`)
+          has_http2 = true
+          break
+        }
+      }
+    }
 
-  if (!has_http2 && has_ssl) {
+    new_text = lines.join('\n')
+  } else if (!has_http2 && has_ssl) {
+    // nginx < 1.25.1: enable via listen … http2 on every ssl listen
+    // e.g. "listen 443 ssl;" -> "listen 443 ssl http2;"
+    // e.g. "listen [::]:443 ssl;" -> "listen [::]:443 ssl http2;"
     let lines = new_text.split('\n')
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i]
-      if (line.trimStart()[0] == '#') {
+      if (line.trimStart()[0] == '#') continue
+      let trimmed = line.split('#')[0].trim()
+      if (
+        !trimmed.startsWith('listen ') ||
+        !trimmed.includes('443') ||
+        !trimmed.includes('ssl') ||
+        trimmed.includes('http2')
+      ) {
         continue
       }
-      lines[i] = line.replace('listen 443 ssl;', 'listen 443 ssl http2;')
+      lines[i] = line.replace('ssl;', 'ssl http2;')
     }
     new_text = lines.join('\n')
+    has_http2 = true
   }
 
   if (new_text != text) {
