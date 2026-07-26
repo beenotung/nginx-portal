@@ -6,98 +6,219 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from 'fs'
 import { basename } from 'path'
 import { createInterface } from 'readline'
 
-export type Config = {
-  filename: string
-  server_name: string
+export type PortConfig = {
+  type: 'port'
   port: number
+  server_name: string
+  filename: string
 }
 
+export type RootConfig = {
+  type: 'root'
+  root: string
+  server_name: string
+  filename: string
+  /** e.g. /pma — serve app under this path instead of /. When set, generates location path/ { alias root/; ... }. */
+  path_prefix?: string
+  /**
+   * nginx.md `auth` column:
+   * - undefined / '' — auto: site-specific htpasswd if present, else generic, else no auth
+   * - '-' — no auth
+   * - 'y' — same lookup, but if none exist use `/etc/nginx/.htpasswd`
+   * - absolute path — use this specific htpasswd file
+   */
+  auth?: string
+  /** e.g. unix:/run/php/php8.3-fpm.sock. Defaults to unix:/run/php/php8.3-fpm.sock */
+  fastcgi_pass?: string
+}
+
+export type Config = PortConfig | RootConfig
+
 export function parse_default_filename(server_name: string) {
-  return server_name.split(' ')[0].split(',')[0] + '.conf'
+  return server_name.split(' ')[0].split(',')[0].split('/')[0] + '.conf'
+}
+
+/** If `server_name` contains a path (e.g. 'example.com/pma'),
+ * return { server_name: 'example.com', path_prefix: '/pma' }. */
+export function parse_server_name_path(server_name: string): {
+  server_name: string
+  path_prefix?: string
+} {
+  let i = server_name.indexOf('/')
+  if (i < 0) {
+    return { server_name }
+  }
+  let host = server_name.slice(0, i).trim()
+  let path = server_name.slice(i).trim()
+  if (path === '/') {
+    return { server_name: host }
+  }
+  return { server_name: host, path_prefix: path }
+}
+
+/** Strip trailing slash; require absolute path; reject filesystem root `/`. */
+export function normalize_doc_root(root: string): string {
+  let path = root.trim()
+  if (!path) {
+    throw new Error('docroot must not be empty, got: ' + JSON.stringify(root))
+  }
+  if (path === '/') {
+    throw new Error(
+      'docroot must not be filesystem root (/), got: ' + JSON.stringify(root),
+    )
+  }
+  if (!path.startsWith('/')) {
+    throw new Error(
+      'docroot must be an absolute path, got: ' + JSON.stringify(root),
+    )
+  }
+  if (path.endsWith('/')) {
+    path = path.slice(0, -1)
+  }
+  return path
 }
 
 export function format_config_list(config_list: Config[]): string {
   let lines: string[] = []
-  lines.push(`|  port | server_name | filename |`)
-  lines.push(`|-------|-------------|----------|`)
-  config_list.sort((a, b) => a.port - b.port)
-  for (let config of config_list) {
-    let port = config.port.toString().padStart(5, ' ')
-    let line = `| ${port} | ${config.server_name} |`
-    let default_filename = parse_default_filename(config.server_name)
-    if (config.filename == default_filename) {
-      line += ` - |`
-    } else {
-      line += ` ${config.filename} |`
+  lines.push(`| dest | server_name | filename | auth |`)
+  lines.push(`|------|-------------|----------|------|`)
+  config_list.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'port' ? -1 : 1
+    if (a.type === 'port' && b.type === 'port') {
+      let cmp = a.port - b.port
+      if (cmp !== 0) return cmp
     }
-    lines.push(line)
+    if (a.type === 'root' && b.type === 'root') {
+      let cmp = a.root.localeCompare(b.root)
+      if (cmp !== 0) return cmp
+      cmp = (a.path_prefix || '').localeCompare(b.path_prefix || '')
+      if (cmp !== 0) return cmp
+    }
+    return a.server_name.localeCompare(b.server_name)
+  })
+  for (let config of config_list) {
+    let dest =
+      config.type === 'port'
+        ? config.port.toString().padStart(5, ' ')
+        : config.root
+    let default_filename = parse_default_filename(config.server_name)
+    let filename = config.filename == default_filename ? '-' : config.filename
+    let server_name =
+      config.type === 'root' && config.path_prefix
+        ? config.server_name + config.path_prefix
+        : config.server_name
+    let auth = config.type === 'root' ? format_auth_column(config.auth) : '-'
+    lines.push(`| ${dest} | ${server_name} | ${filename} | ${auth} |`)
   }
   return lines.join('\n')
+}
+
+/** Split a markdown table row into cells; keep empty middle cells (column alignment). */
+function parse_table_row(line: string): string[] {
+  line = line.trim()
+  if (!line) return []
+  if (line.startsWith('|')) {
+    line = line.slice(1)
+  }
+  if (line.endsWith('|')) {
+    line = line.slice(0, -1)
+  }
+  return line.split('|').map(col => col.trim())
 }
 
 export function parse_config_list(text: string): Config[] {
   let lines = text
     .split('\n')
-    .map(line =>
-      line
-        .split('|')
-        .map(col => col.trim())
-        .filter(col => col.length > 0),
-    )
+    .map(line => parse_table_row(line))
     .filter(line => line.length > 0)
   let headers = lines.shift()
   if (!headers) {
     throw new Error('missing header line')
   }
-  if (
-    headers[0]?.toLowerCase() != 'port' ||
-    headers[1]?.toLowerCase() != 'server_name' ||
-    headers[2]?.toLowerCase() != 'filename'
-  ) {
+  let destVariants = new Set([
+    'dest',
+    'port',
+    'root',
+    'path',
+    'port_or_root',
+    'port_or_path',
+  ])
+  let colIndex = {
+    dest: headers.findIndex(col => destVariants.has(col.toLowerCase())),
+    server_name: headers.findIndex(col => col.toLowerCase() === 'server_name'),
+    filename: headers.findIndex(col => col.toLowerCase() === 'filename'),
+    auth: headers.findIndex(col => col.toLowerCase() === 'auth'),
+  }
+  if (colIndex.dest == -1 || colIndex.server_name == -1) {
     throw new Error(
-      'invalid header, expect: "| port | server_name | filename |"',
+      'invalid table header, requires dest and server_name (filename/auth optional, in any order)',
+    )
+  }
+  let indices = Object.values(colIndex)
+  let extraHeaders = headers
+    .map((name, index) => ({ name, index }))
+    .filter(col => !indices.includes(col.index))
+    .map(col => col.name)
+  let missingHeaders = Object.entries(colIndex)
+    .filter(([_name, index]) => index === -1)
+    .map(([name]) => name)
+  if (missingHeaders.length > 0 && extraHeaders.length > 0) {
+    throw new Error(
+      `potential mismatch in header names, extra headers found: ${extraHeaders.join(', ')}, missing headers: ${missingHeaders.join(', ')}`,
     )
   }
   if (lines.length == 0) return []
 
-  // remove separator line
-  if (
-    lines[0][0]?.startsWith('-') &&
-    lines[0][1]?.startsWith('-') &&
-    lines[0][2]?.startsWith('-')
-  ) {
+  // remove separator line (cells are dashes)
+  if (lines[0].every(col => col.replaceAll('-', '').length === 0)) {
     lines.shift()
   }
 
   let config_list: Config[] = []
 
   for (let cols of lines) {
-    let port = +cols[0]
-    if (!port) {
-      throw new Error('invalid port, got: ' + JSON.stringify(cols[0]))
-    }
+    let dest = cols[colIndex.dest]
 
-    let server_name = cols[1]
-    if (!server_name) {
-      throw new Error('missing server_name, port: ' + port)
+    let serverNameRaw = cols[colIndex.server_name]
+    if (!serverNameRaw) {
+      throw new Error('missing server_name, row: ' + JSON.stringify(cols))
     }
+    let { server_name, path_prefix } = parse_server_name_path(serverNameRaw)
 
-    let filename = cols[2]
-    if (filename == '-' || !filename?.trim()) {
+    let filename = cols[colIndex.filename]
+    if (!filename || filename == '-') {
       filename = parse_default_filename(server_name)
     }
 
-    let config: Config = {
-      port,
-      server_name,
-      filename,
+    let auth = cols[colIndex.auth]
+
+    if (+dest) {
+      let port = +dest
+      config_list.push({
+        type: 'port',
+        port,
+        server_name,
+        filename,
+      })
+    } else if (dest?.startsWith('/')) {
+      let root = normalize_doc_root(dest)
+      config_list.push({
+        type: 'root',
+        root,
+        server_name,
+        filename,
+        path_prefix,
+        auth,
+      })
+    } else {
+      throw new Error('invalid dest, got: ' + JSON.stringify(cols))
     }
-    config_list.push(config)
   }
 
   return config_list
@@ -145,22 +266,263 @@ export function parse_conf_file(file: string): Config {
   if (!server_name) {
     throw new Error('server_name not found, file: ' + JSON.stringify(file))
   }
-  let port = +lines
-    .find(line => line.startsWith('proxy_pass '))
-    ?.replace('proxy_pass ', '')
-    .split(';')[0]
-    .split(':')
-    .pop()!
-  if (!port) {
-    throw new Error('port not found, file: ' + JSON.stringify(file))
-  }
   let filename = basename(file)
-  return { filename, server_name, port }
+  let proxyLine = lines.find(line => line.startsWith('proxy_pass '))
+  if (proxyLine) {
+    let port = +proxyLine
+      .replace('proxy_pass ', '')
+      .split(';')[0]
+      .split(':')
+      .pop()!
+    if (!port) {
+      throw new Error('port not found, file: ' + JSON.stringify(file))
+    }
+    return {
+      type: 'port',
+      port,
+      server_name,
+      filename,
+    }
+  }
+  let authFile = lines
+    .find(line => line.startsWith('auth_basic_user_file '))
+    ?.replace('auth_basic_user_file ', '')
+    .split(';')[0]
+    .trim()
+  // Optional; presence of fastcgi_pass (not deny-`\.php`) marks PHP on save
+  let fastcgi_pass = lines
+    .find(line => line.startsWith('fastcgi_pass '))
+    ?.replace('fastcgi_pass ', '')
+    .split(';')[0]
+    .trim()
+
+  let rootLine = lines.find(line => line.startsWith('root '))
+  if (rootLine) {
+    let root = rootLine.replace('root ', '').split(';')[0].trim()
+    root = normalize_doc_root(root)
+    return {
+      type: 'root',
+      filename,
+      server_name,
+      root,
+      auth: auth_from_user_file(authFile),
+      fastcgi_pass,
+    }
+  }
+
+  // Path-prefix apps: `location /pma/ { alias /usr/share/phpmyadmin/; ... }` (no top-level root)
+  let aliasLine = lines.find(line => line.startsWith('alias '))
+  if (aliasLine) {
+    let root = aliasLine.replace('alias ', '').split(';')[0].trim()
+    root = normalize_doc_root(root)
+    let path_prefix: string | undefined
+    for (let line of lines) {
+      if (!line.startsWith('location ') || line.includes('~')) continue
+      let match = /^location\s+(\/\S+?)\s*\{?\s*$/.exec(line)
+      if (!match) continue
+      let path = match[1]
+      if (path === '/') continue
+      path_prefix = path.endsWith('/') ? path.slice(0, -1) : path
+      break
+    }
+    return {
+      type: 'root',
+      filename,
+      server_name,
+      root,
+      auth: auth_from_user_file(authFile),
+      path_prefix,
+      fastcgi_pass,
+    }
+  }
+
+  throw new Error(
+    'unknown config type (expect proxy_pass, root, or alias): ' +
+      JSON.stringify(file),
+  )
+}
+
+const PHP_FPM_DIR = '/run/php'
+const NGINX_DIR = '/etc/nginx'
+const NGINX_AUTH_DIR = '/etc/nginx/auth'
+const DEFAULT_HTPASSWD = `${NGINX_DIR}/.htpasswd`
+const DEFAULT_HTPASSWD_2 = `${NGINX_AUTH_DIR}/.htpasswd`
+const DEFAULT_PHP_FPM_SOCK = 'unix:/run/php/php8.3-fpm.sock'
+
+/** Detect PHP-FPM socket from /run/php/ (e.g. php8.3-fpm.sock).
+ * Returns undefined if dir missing or no match. */
+export function detect_php_fpm_sock(): string | undefined {
+  if (!existsSync(PHP_FPM_DIR)) return undefined
+  let names: string[] = []
+  try {
+    names = readdirSync(PHP_FPM_DIR)
+  } catch {
+    return undefined
+  }
+  let versioned = names
+    .filter(n => n.endsWith('.sock') && /^php[\d.]+-fpm\.sock$/.test(n))
+    .sort()
+    .pop()
+  let unversioned = names.find(n => n === 'php-fpm.sock')
+  let sock = versioned ?? unversioned
+  if (sock) {
+    return `unix:${PHP_FPM_DIR}/${sock}`
+  }
+  return undefined
+}
+
+/** Candidate htpasswd paths (each server_name host, then generic). */
+export function auth_file_candidates(server_name: string): string[] {
+  let files: string[] = []
+  let hosts = server_name
+    .split(' ')
+    .flatMap(part => part.split(','))
+    .map(part => part.split('/')[0].trim())
+    .filter(part => part.length > 0)
+  let variants = ['<host>.htpasswd', '.htpasswd-<host>', '.htpasswd_<host>']
+  let dirs = [NGINX_AUTH_DIR, NGINX_DIR]
+  for (let dir of dirs) {
+    for (let host of hosts) {
+      for (let variant of variants) {
+        let name = variant.replace('<host>', host)
+        files.push(`${dir}/${name}`)
+      }
+    }
+  }
+  for (let dir of dirs) {
+    files.push(`${dir}/.htpasswd`)
+  }
+  return files
+}
+
+/**
+ * Resolve nginx `auth_basic_user_file` path from the `auth` column.
+ * - '-' → undefined (no auth)
+ * - absolute path → that path
+ * - 'y' — same lookup as empty, else DEFAULT_HTPASSWD
+ * - empty/undefined — site-specific if present, else generic, else undefined
+ */
+export function resolve_auth_user_file(config: {
+  server_name: string
+  auth?: string
+}): string | undefined {
+  let auth = config.auth?.trim()
+  if (auth === '-') return undefined
+  if (auth?.startsWith('/')) return auth
+  let force = !!auth && ['y', 'yes'].includes(auth.toLowerCase())
+  if (auth && !force) {
+    throw new Error(
+      'invalid auth value (use -, y, empty, or absolute path): ' +
+        JSON.stringify(auth),
+    )
+  }
+  for (let file of auth_file_candidates(config.server_name)) {
+    if (existsSync(file)) return file
+  }
+  return !force
+    ? undefined
+    : existsSync(NGINX_AUTH_DIR)
+      ? DEFAULT_HTPASSWD_2
+      : DEFAULT_HTPASSWD
+}
+
+/** Map a conf `auth_basic_user_file` path back to an `auth` column value. */
+export function auth_from_user_file(file?: string): string {
+  if (!file) return '-'
+  if (file === DEFAULT_HTPASSWD || file === DEFAULT_HTPASSWD_2) {
+    return 'y'
+  }
+  return file
+}
+
+/** Format `auth` column cell for nginx.md. */
+export function format_auth_column(auth?: string): string {
+  let value = auth?.trim()
+  if (!value) return ''
+  if (['y', 'yes'].includes(value.toLowerCase())) return 'y'
+  return value
+}
+
+// Dirs to skip when scanning for .php (avoid false positives from vendor/node_modules etc.)
+const PHP_SCAN_SKIP_DIRS = new Set([
+  'vendor',
+  'node_modules',
+  'bower_components',
+  'storage',
+  'cache',
+  'tmp',
+  'temp',
+  'logs',
+  'backups',
+  '.git',
+])
+
+/** Scan root dir for any .php file (recursive, skipping vendor/node_modules etc.). Missing/unreadable root → false (tool runs on the real host). */
+export function has_php_files(root: string): boolean {
+  if (!existsSync(root)) {
+    return false
+  }
+  let stack = [root]
+  while (stack.length > 0) {
+    let dir = stack.pop()!
+    try {
+      let filenames = readdirSync(dir)
+      for (let filename of filenames) {
+        if (filename.endsWith('.php')) {
+          return true
+        }
+        if (PHP_SCAN_SKIP_DIRS.has(filename) || filename.startsWith('.'))
+          continue
+        let file = join(dir, filename)
+        if (statSync(file).isDirectory()) {
+          stack.push(file)
+        }
+      }
+    } catch (error) {
+      // ignore unreadable dirs / files
+    }
+  }
+  return false
+}
+
+/**
+ * Best-effort phpMyAdmin detection (heuristics; may miss custom layouts or false-positive on /admin-like paths).
+ * True if root/path looks like PMA, a marker file mentions PhpMyAdmin, or themes/pmahomme exists.
+ */
+export function is_phpmyadmin(root: string, path_prefix?: string): boolean {
+  if (/phpmyadmin/i.test(root)) return true
+  // path: `admin` covers /admin and /phpmyadmin; also accept short /pma aliases
+  if (path_prefix && /(admin|pma)/i.test(path_prefix)) return true
+  // Theme dir name is PMA-specific (existence only)
+  if (existsSync(join(root, 'themes/pmahomme'))) return true
+  // PHP markers: require product name in file contents (existence alone is not enough)
+  let contentMarkers = [
+    'index.php',
+    'config.sample.inc.php',
+    'libraries/vendor_config.php',
+    'libraries/classes/DatabaseInterface.php',
+  ]
+  for (let marker of contentMarkers) {
+    let file = join(root, marker)
+    if (!existsSync(file)) continue
+    try {
+      let text = readFileSync(file, 'utf-8')
+      if (/phpmyadmin/i.test(text)) return true
+    } catch {
+      // ignore unreadable files
+    }
+  }
+  return false
 }
 
 export function save_conf_file(args: { dir: string; config: Config }) {
   let { dir, config } = args
-  let text = `
+  if (config.type === 'root') {
+    config = { ...config, root: normalize_doc_root(config.root) }
+  }
+  let text: string
+  if (config.type === 'port') {
+    text = `
 server {
     listen 80;
     listen [::]:80;
@@ -191,6 +553,142 @@ server {
     }
 }
 `
+  } else {
+    // Default deny list for static and PHP: dotfiles/dirs that should not be web-accessible. Edit generated config to allow more as needed.
+    let sensitiveDotfiles =
+      'env|git|ht|phpunit|php-cs-fixer|composer|idea|vscode|cursor|docker|cache|tmp|temp|terraform|next|nuxt|vercel|netlify|npm|yarn|ds_store|sqlite|db|nyc_output|npmrc|yarnrc'
+    let sensitiveDirs =
+      'vendor|storage|node_modules|bower_components|coverage|cache|tmp|temp|logs|backups|scripts'
+    // Deny database / source-map extensions (*.sqlite, *.db, *.js.map, *.map, etc.)
+    let sensitiveExt = '\\.(sqlite3?|db|map)$'
+    // Deny package/docker metadata files if present under the docroot
+    let sensitiveFiles =
+      'package\\.json|package-lock\\.json|pnpm-lock\\.yaml|yarn\\.lock|composer\\.json|composer\\.lock|Dockerfile|docker-compose\\.ya?ml|compose\\.ya?ml'
+    // Extra paths/files (README allowed by default)
+    let sensitiveExtra =
+      'doc|sql|setup/|examples|test|po|scripts|.*\\.bak|.*\\.dist|.*\\.swp'
+    if (is_phpmyadmin(config.root, config.path_prefix)) {
+      // phpMyAdmin-only: top-level docs / release-date stamp files
+      sensitiveExtra += '|README|CHANGELOG|RELEASE-DATE-.*'
+    }
+
+    let authPath = resolve_auth_user_file(config)
+    let authBlock = authPath
+      ? `
+    # Basic auth
+    auth_basic "Restricted Access";
+    auth_basic_user_file ${authPath};
+`
+      : ''
+
+    let logName = config.filename.replace(/\.conf$/, '')
+
+    // enable PHP server only when docroot has .php files (missing root / FPM installed alone → static)
+    let withPhp = has_php_files(config.root)
+    let fastcgi =
+      config.fastcgi_pass ?? detect_php_fpm_sock() ?? DEFAULT_PHP_FPM_SOCK
+
+    let pathPrefix = config.path_prefix ?? ''
+    let pathLoc = pathPrefix.endsWith('/') ? pathPrefix : pathPrefix + '/'
+    let rootSlash = config.root.endsWith('/') ? config.root : config.root + '/'
+
+    let denyPath = pathPrefix ? pathLoc : '/'
+
+    let rootBlock = pathPrefix
+      ? ''
+      : `
+    root ${config.root};
+    index ${withPhp ? 'index.php ' : ''}index.html index.htm;
+`
+
+    let locationBlock: string
+    if (pathPrefix && withPhp) {
+      locationBlock = `
+    location ${pathLoc} {
+        alias ${rootSlash};
+        index index.php index.html index.htm;
+        try_files $uri $uri/ ${pathLoc}index.php?$args;
+        location ~ \\.php$ {
+            include snippets/fastcgi-php.conf;
+            fastcgi_param SCRIPT_FILENAME $request_filename;
+            fastcgi_pass ${fastcgi};
+            include fastcgi_params;
+        }
+    }
+`
+    } else if (pathPrefix) {
+      locationBlock = `
+    location ${pathLoc} {
+        alias ${rootSlash};
+        index index.html index.htm;
+        try_files $uri $uri/ ${pathLoc}index.html;
+    }
+`
+    } else if (withPhp) {
+      locationBlock = `
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+`
+    } else {
+      locationBlock = `
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+`
+    }
+
+    let denyPhpBlock = withPhp
+      ? ''
+      : `
+    # Deny PHP so source is not served if .php files are added later without updating this config file
+    location ~ \\.php$ {
+        deny all;
+    }
+`
+
+    let denyBlock = `
+    # Deny access to sensitive files and dirs (adjust these deny rules as needed)
+    location ~ /\\.(${sensitiveDotfiles}) {
+        deny all;
+    }
+    location ~* ${sensitiveExt} {
+        deny all;
+    }
+    location ~* /(${sensitiveFiles})$ {
+        deny all;
+    }
+    location ~* ^${denyPath}(${sensitiveDirs})/ {
+        deny all;
+    }
+    location ~* ^${denyPath}(${sensitiveExtra})$ {
+        deny all;
+    }`
+
+    let rootPhpBlock =
+      withPhp && !pathPrefix
+        ? `
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass ${fastcgi};
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }`
+        : ''
+
+    text = `
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name ${config.server_name};
+${rootBlock}
+    access_log /var/log/nginx/${logName}_access.log;
+    error_log  /var/log/nginx/${logName}_error.log;
+${authBlock}${locationBlock}${denyPhpBlock}${denyBlock}${rootPhpBlock}
+}
+`
+  }
   let file = join(dir, config.filename)
   save_file(file, text)
 }
