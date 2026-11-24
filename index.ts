@@ -699,21 +699,32 @@ type Semver = {
   patch: number
 }
 
+// Debian-family /etc/profile drops sbin dirs for non-root, so "nginx" only resolves under sudo
+const NGINX_BINARIES = [
+  'nginx',
+  '/usr/sbin/nginx',
+  '/usr/local/sbin/nginx',
+  '/usr/local/nginx/sbin/nginx',
+]
+
 /** Detect nginx version from `nginx -v` (e.g. 1.24.0). undefined if nginx missing/unreadable. */
 export function detect_nginx_version(): Semver | undefined {
-  try {
-    let result = spawnSync('nginx', ['-v'], { encoding: 'utf-8' })
-    let text = `${result.stderr || ''}${result.stdout || ''}`
-    let match = /nginx\/(\d+)\.(\d+)\.(\d+)/.exec(text)
-    if (!match) return undefined
-    return {
-      major: +match[1],
-      minor: +match[2],
-      patch: +match[3],
+  for (let binary of NGINX_BINARIES) {
+    try {
+      let result = spawnSync(binary, ['-v'], { encoding: 'utf-8' })
+      let text = `${result.stderr || ''}${result.stdout || ''}`
+      let match = /nginx\/(\d+)\.(\d+)\.(\d+)/.exec(text)
+      if (!match) continue
+      return {
+        major: +match[1],
+        minor: +match[2],
+        patch: +match[3],
+      }
+    } catch {
+      continue
     }
-  } catch {
-    return undefined
   }
+  return undefined
 }
 
 /** True when standalone `http2 on;` is supported (nginx 1.25.1+). */
