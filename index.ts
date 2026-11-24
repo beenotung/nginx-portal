@@ -707,8 +707,18 @@ const NGINX_BINARIES = [
   '/usr/local/nginx/sbin/nginx',
 ]
 
+/** Cached probe result; holds undefined once "not found" has been tried. */
+let cached_nginx_version: { version: Semver | undefined } | undefined
+
 /** Detect nginx version from `nginx -v` (e.g. 1.24.0). undefined if nginx missing/unreadable. */
 export function detect_nginx_version(): Semver | undefined {
+  if (!cached_nginx_version) {
+    cached_nginx_version = { version: probe_nginx_version() }
+  }
+  return cached_nginx_version.version
+}
+
+function probe_nginx_version(): Semver | undefined {
   for (let binary of NGINX_BINARIES) {
     try {
       let result = spawnSync(binary, ['-v'], { encoding: 'utf-8' })
