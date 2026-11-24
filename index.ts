@@ -741,6 +741,8 @@ function compare_semver(a: Semver, b: Semver): number {
   return a.patch - b.patch
 }
 
+let warned_missing_nginx_version = false
+
 export function update_conf_file(
   file: string,
   version = detect_nginx_version(),
@@ -785,7 +787,16 @@ export function update_conf_file(
 
   let has_http2 = has_http2_line || has_http2_on
 
-  if (useHttp2Directive && has_ssl) {
+  if (!version) {
+    // nginx version unknown: keep the existing http2 syntax instead of guessing.
+    // The legacy form warns on nginx 1.25.1+, while "http2 on;" fails on older nginx.
+    if (!warned_missing_nginx_version) {
+      warned_missing_nginx_version = true
+      console.log(
+        'Warning: cannot detect nginx version, leaving http2 settings unchanged',
+      )
+    }
+  } else if (useHttp2Directive && has_ssl) {
     // nginx 1.25.1+: prefer `http2 on;` and strip deprecated listen … http2
     // e.g. "listen 443 ssl http2;" -> "listen 443 ssl;"
     // e.g. "listen [::]:443 ssl http2;" -> "listen [::]:443 ssl;"
@@ -843,7 +854,8 @@ export function update_conf_file(
       ) {
         continue
       }
-      lines[i] = line.replace('ssl;', 'ssl http2;')
+      // keep "default_server" and other listen params in place
+      lines[i] = line.replace(/\bssl\b/, 'ssl http2')
     }
     new_text = lines.join('\n')
     has_http2 = true
